@@ -769,6 +769,56 @@ class main {
 
                 $result = $this->sync_existing_user($aadsync, $user, $existinguser, $exactmatch);
 
+                    if (isset($aadsync['matchswitchauth']) && $exactmatch) {
+                        // Switch the user to OpenID authentication method, but only if this setting is enabled and full username matched.
+                        require_once($CFG->dirroot.'/user/profile/lib.php');
+                        require_once($CFG->dirroot.'/user/lib.php');
+                        // Do not switch Moodle user to OpenID if another Moodle user is already using same Office 365 account for logging in.
+                        $sql = 'SELECT u.username
+                                  FROM {user} u
+                             LEFT JOIN {local_o365_objects} obj ON obj.type=\'user\' AND obj.moodleid = u.id
+                             WHERE obj.o365name = ?
+                               AND u.username != ?';
+                        $params = [$user['upnlower'], $existinguser->username];
+                        $alreadylinkedusername = $DB->get_field_sql($sql, $params);
+
+                        if ($alreadylinkedusername !== false) {
+                            $errmsg = 'This Azure AD user has already been linked with Moodle user %s. Not switching Moodle user %s to OpenID.';
+                            $this->mtrace(sprintf($errmsg, $alreadylinkedusername, $existinguser->username));
+                            continue;
+                        } else {
+                            if (!empty($existinguser->existingconnectionid)) {
+                                // Delete existing connection before linking (in case matching was performed without auth switching previously).
+                                $DB->delete_records_select ('local_o365_connections', "id = {$existinguser->existingconnectionid}");
+                            }
+                            $fullexistinguser = get_complete_user_data('username', $existinguser->username);
+                            $existinguser->id = $fullexistinguser->id;
+                            $existinguser->auth = 'oidc';
+                            user_update_user($existinguser, true);
+                            // Clear user's password.
+                            $password = null;
+                            update_internal_user_password($existinguser, $password);
+                            $this->mtrace('Switched user to OpenID.');
+                        }
+
+                    } else if (!empty($existinguser->existingconnectionid)) {
+                        $this->mtrace('User is already matched.');
+                        continue;
+
+                    } else {
+                        // Match to o365 account, if enabled.
+                        $matchrec = [
+                            'muserid' => $existinguser->muserid,
+                            'aadupn' => $user['upnlower'],
+                            'uselogin' => isset($aadsync['matchswitchauth']) ? 1 : 0,
+                        ];
+                        $DB->insert_record('local_o365_connections', $matchrec);
+                        $this->mtrace('Matched user, but did not switch them to OpenID.');
+                    }
+                } else {
+                    $this->mtrace('The user is already using OpenID for authentication.');
+                }
+
                 if ($existinguser->auth === 'oidc' || empty($existinguser->tokid)) {
                     // Create userobject if it does not exist.
                     if (empty($existinguser->objrecid)) {
