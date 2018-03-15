@@ -282,6 +282,12 @@ class observers {
 
             // Extract basic information from the IDToken.
             $updateduser = new \stdClass;
+            
+	    // SUP-7701 
+	    // Applied patch https://github.com/Microsoft/o365-moodle/issues/221
+	    // $updateduser->lang = 'en';
+            
+	    $updateduser->idnumber = '';
             $firstname = $idtoken->claim('given_name');
             if (!empty($firstname)) {
                 $updateduser->firstname = $firstname;
