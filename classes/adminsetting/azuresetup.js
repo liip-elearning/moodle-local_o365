@@ -278,8 +278,6 @@ $(function() {
                                     errstr += opts.strcorrectval+' <b>'+results.data.appdata.signonurl.intended+'</b>';
                                     appdata.append(main.rendererrorbox(errstr));
                                 }
-                            } else {
-                                appdata.append(main.renderinfobox(opts.strappdatasignonurlgeneralerror));
                             }
                         } else {
                             appdata.append(main.rendererrorbox(results.data.appdata.error));
@@ -298,18 +296,18 @@ $(function() {
                             unified.append(main.rendererrorbox(opts.strunifiederror));
                         }
                         content.append(unified);
-                    }
-
-                    // Legacy API.
-                    var legacy = $('<section></section>');
-                    legacy.append('<h5>' + opts.strlegacyheader + '</h5>');
-                    legacy.append('<span>' + opts.strlegacydesc + '</h5>');
-                    if (typeof(results.data.legacyapi) !== 'undefined') {
-                        legacy.append(main.rendersection_legacyapi(results.data.legacyapi));
                     } else {
-                        legacy.append(main.rendererrorbox(opts.strlegacyerror));
+                        // Legacy API.
+                        var legacy = $('<section></section>');
+                        legacy.append('<h5>' + opts.strlegacyheader + '</h5>');
+                        legacy.append('<span>' + opts.strlegacydesc + '</h5>');
+                        if (typeof(results.data.legacyapi) !== 'undefined') {
+                            legacy.append(main.rendersection_legacyapi(results.data.legacyapi));
+                        } else {
+                            legacy.append(main.rendererrorbox(opts.strlegacyerror));
+                        }
+                        content.append(legacy);
                     }
-                    content.append(legacy);
 
                     main.updatedisplay(content);
                     return true;

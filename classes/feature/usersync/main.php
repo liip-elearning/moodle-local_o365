@@ -47,7 +47,7 @@ class main {
 
         if ($uselegacy === true) {
             $resource = \local_o365\rest\azuread::get_resource();
-            $token = \local_o365\oauth2\systemtoken::instance(null, $resource, $this->clientdata, $this->httpclient);
+            $token = \local_o365\oauth2\systemapiusertoken::instance(null, $resource, $this->clientdata, $this->httpclient);
         } else {
             $resource = \local_o365\rest\unified::get_resource();
             $token = \local_o365\utils::get_app_or_system_token($resource, $this->clientdata, $this->httpclient);
@@ -82,7 +82,9 @@ class main {
 
         $token = \local_o365\oauth2\token::instance($muserid, $resource, $this->clientdata, $this->httpclient);
         if (empty($token) && $systemfallback === true) {
-            $token = \local_o365\oauth2\systemtoken::instance(null, $resource, $this->clientdata, $this->httpclient);
+            $token = ($unifiedconfigured === true)
+                ? \local_o365\utils::get_app_or_system_token($resource, $this->clientdata, $this->httpclient)
+                : \local_o365\oauth2\systemapiusertoken::instance(null, $resource, $this->clientdata, $this->httpclient);
         }
         if (empty($token)) {
             throw new \Exception('No token available for user #'.$muserid);
@@ -301,7 +303,7 @@ class main {
                 $httpclient = new \local_o365\httpclient();
                 $clientdata = \local_o365\oauth2\clientdata::instance_from_oidc();
                 $resource = \local_o365\rest\unified::get_resource();
-                $token = \local_o365\oauth2\systemtoken::instance(null, $resource, $clientdata, $httpclient);
+                $token = \local_o365\utils::get_app_or_system_token($resource, $clientdata, $httpclient);
                 $apiclient = new \local_o365\rest\unified($token, $httpclient);
             } catch (\Exception $e) {
                 \local_o365\utils::debug('Could not construct graph api', 'check_usercreationrestriction', $e);
@@ -314,9 +316,9 @@ class main {
                     \local_o365\utils::debug('Could not find group (1)', 'check_usercreationrestriction', $group);
                     return false;
                 }
-                $members = $apiclient->get_group_members($group['id']);
-                foreach ($members['value'] as $member) {
-                    if ($member['id'] === $aaddata['id']) {
+                $usersgroups = $apiclient->get_users_groups($group['id'],$aaddata['id']);
+                foreach ($usersgroups['value'] as $usergroup) {
+                    if ($group['id'] === $usergroup) {
                         return true;
                     }
                 }
@@ -452,6 +454,10 @@ class main {
 
         $aadsync = get_config('local_o365', 'aadsync');
         $photoexpire = get_config('local_o365', 'photoexpire');
+        if (empty($photoexpire) || !is_numeric($photoexpire)) {
+            $photoexpire = 24;
+        }
+        $photoexpiresec = $photoexpire * 3600;
         $aadsync = array_flip(explode(',', $aadsync));
         $switchauthminupnsplit0 = get_config('local_o365', 'switchauthminupnsplit0');
         if (empty($switchauthminupnsplit0)) {
@@ -502,10 +508,10 @@ class main {
              LEFT JOIN {auth_oidc_token} tok ON tok.username = u.username
              LEFT JOIN {local_o365_connections} conn ON conn.muserid = u.id
              LEFT JOIN {local_o365_appassign} assign ON assign.muserid = u.id
-             LEFT JOIN {local_o365_objects} obj ON obj.type = \'user\' AND obj.moodleid = u.id
+             LEFT JOIN {local_o365_objects} obj ON obj.type = ? AND obj.moodleid = u.id
                  WHERE u.username '.$usernamesql.' AND u.mnethostid = ? AND u.deleted = ?
-              ORDER BY CONCAT(u.username, \'~\') '; // Sort john.smith@example.org before john.smith.
-        $params = array_merge($usernameparams, [$CFG->mnet_localhost_id, '0']);
+              ORDER BY CONCAT(u.username, \'~\')'; // Sort john.smith@example.org before john.smith.
+        $params = array_merge(['user'], $usernameparams, [$CFG->mnet_localhost_id, '0']);
         $existingusers = $DB->get_records_sql($sql, $params);
 
         // Fetch linked AAD user accounts.
@@ -525,9 +531,9 @@ class main {
              LEFT JOIN {auth_oidc_token} tok ON tok.username = u.username
              LEFT JOIN {local_o365_connections} conn ON conn.muserid = u.id
              LEFT JOIN {local_o365_appassign} assign ON assign.muserid = u.id
-             LEFT JOIN {local_o365_objects} obj ON obj.type = \'user\' AND obj.moodleid = u.id
+             LEFT JOIN {local_o365_objects} obj ON obj.type = ? AND obj.moodleid = u.id
                  WHERE tok.oidcusername '.$upnsql.' AND u.username '.$usernamesql.' AND u.mnethostid = ? AND u.deleted = ? ';
-        $params = array_merge($upnparams, $usernameparams, [$CFG->mnet_localhost_id, '0']);
+        $params = array_merge(['user'], $upnparams, $usernameparams, [$CFG->mnet_localhost_id, '0']);
         $linkedexistingusers = $DB->get_records_sql($sql, $params);
 
         $existingusers = array_merge($existingusers, $linkedexistingusers);
@@ -536,14 +542,42 @@ class main {
             $this->mtrace(' ');
             $this->mtrace('Syncing user '.$user['upnlower']);
 
-            if (isset($user['aad.isDeleted']) && $user['aad.isDeleted'] == '1') {
-                $this->mtrace('User is deleted. Skipping.');
-                continue;
-            }
             if (\local_o365\rest\unified::is_configured()) {
                 $userobjectid = $user['id'];
             } else {
                 $userobjectid = $user['objectId'];
+            }
+
+            if (isset($user['aad.isDeleted']) && $user['aad.isDeleted'] == '1') {
+                if (isset($aadsync['delete'])) {
+                    // Check for synced user.
+                    $sql = 'SELECT u.*
+                              FROM {user} u
+                              JOIN {local_o365_objects} obj ON obj.type = "user" AND obj.moodleid = u.id
+                              JOIN {auth_oidc_token} tok ON tok.username = u.username
+                             WHERE u.username = ?
+                                   AND u.mnethostid = ?
+                                   AND u.deleted = ?
+                                   AND u.suspended = ?
+                                   AND u.auth = ?';
+                    $params = [
+                        trim(\core_text::strtolower($user['userPrincipalName'])),
+                        $CFG->mnet_localhost_id,
+                        '0',
+                        '0',
+                        'oidc',
+                        time()
+                    ];
+                    $synceduser = $DB->get_record_sql($sql, $params);
+                    if (!empty($synceduser)) {
+                        $synceduser->suspended = 1;
+                        user_update_user($synceduser, false);
+                        $this->mtrace($synceduser->username.' was marked deleted in Azure.');
+                    }
+                } else {
+                    $this->mtrace('User is deleted. Skipping.');
+                }
+                continue;
             }
 
             if (!isset($existingusers[$user['upnlower']]) && !isset($existingusers[$user['upnsplit0']])) {
@@ -601,13 +635,15 @@ class main {
                         $this->mtrace('Could not assign user "'.$user['userPrincipalName'].'" Reason: '.$e->getMessage());
                     }
                 }
-                if (isset($aadsync['photosync']) && (empty($existinguser->photoupdated) || ($existinguser->photoupdated + $photoexpire * 3600) < time())) {
-                    try {
-                        if (!PHPUNIT_TEST) {
-                            $this->assign_photo($existinguser->muserid, $user['upnlower']);
+                if (isset($aadsync['photosync'])) {
+                    if (empty($existinguser->photoupdated) || ($existinguser->photoupdated + $photoexpiresec) < time()) {
+                        try {
+                            if (!PHPUNIT_TEST) {
+                                $this->assign_photo($existinguser->muserid, $user['upnlower']);
+                            }
+                        } catch (\Exception $e) {
+                            $this->mtrace('Could not assign profile photo to user "'.$user['userPrincipalName'].'" Reason: '.$e->getMessage());
                         }
-                    } catch (\Exception $e) {
-                        $this->mtrace('Could not assign profile photo to user "'.$user['userPrincipalName'].'" Reason: '.$e->getMessage());
                     }
                 }
 
@@ -626,7 +662,7 @@ class main {
                         // Do not switch Moodle user to OpenID if another Moodle user is already using same Office 365 account for logging in.
                         $sql = 'SELECT u.username
                                   FROM {user} u
-                             LEFT JOIN {local_o365_objects} obj ON obj.type=\'user\' AND obj.moodleid = u.id
+                             LEFT JOIN {local_o365_objects} obj ON obj.type="user" AND obj.moodleid = u.id
                              WHERE obj.o365name = ?
                                AND u.username != ?';
                         $params = [$user['upnlower'], $existinguser->username];

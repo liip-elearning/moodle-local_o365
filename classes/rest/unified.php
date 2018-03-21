@@ -37,7 +37,7 @@ class unified extends \local_o365\rest\o365api {
      */
     public static function is_configured() {
         $config = get_config('local_o365');
-        return (static::is_enabled() && !empty($config->aadtenant) && !empty($config->unifiedapiactive)) ? true : false;
+        return (static::is_enabled() && !empty($config->unifiedapiactive)) ? true : false;
     }
 
     /**
@@ -46,8 +46,11 @@ class unified extends \local_o365\rest\o365api {
      * @return bool Whether the Microsoft Graph API is enabled.
      */
     public static function is_enabled() {
-        $disabled = get_config('local_o365', 'disablegraphapi');
-        return (!empty($disabled)) ? false : true;
+        global $CFG;
+        if (!empty($CFG->local_o365_forcelegacyapi)) {
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -119,27 +122,6 @@ class unified extends \local_o365\rest\o365api {
      * @param array $options Additional options for the request.
      * @return string The result of the API call.
      */
-    public function betatenantapicall($httpmethod, $apimethod, $params = '', $options = array()) {
-        $config = get_config('local_o365');
-        if (empty($config->aadtenant)) {
-            throw new \moodle_exception('erroracplocalo365notconfig', 'local_o365');
-        }
-        if (empty($options['apiarea'])) {
-            $options['apiarea'] = $this->generate_apiarea($apimethod);
-        }
-        $apimethod = '/beta/'.$config->aadtenant.$apimethod;
-        return parent::apicall($httpmethod, $apimethod, $params, $options);
-    }
-
-    /**
-     * Make an API call.
-     *
-     * @param string $httpmethod The HTTP method to use. get/post/patch/merge/delete.
-     * @param string $apimethod The API endpoint/method to call.
-     * @param string $params Additional paramters to include.
-     * @param array $options Additional options for the request.
-     * @return string The result of the API call.
-     */
     public function apicall($httpmethod, $apimethod, $params = '', $options = array()) {
         if ($apimethod[0] !== '/') {
             $apimethod = '/'.$apimethod;
@@ -148,27 +130,6 @@ class unified extends \local_o365\rest\o365api {
             $options['apiarea'] = $this->generate_apiarea($apimethod);
         }
         $apimethod = '/v1.0'.$apimethod;
-        return parent::apicall($httpmethod, $apimethod, $params, $options);
-    }
-
-    /**
-     * Make an API call.
-     *
-     * @param string $httpmethod The HTTP method to use. get/post/patch/merge/delete.
-     * @param string $apimethod The API endpoint/method to call.
-     * @param string $params Additional paramters to include.
-     * @param array $options Additional options for the request.
-     * @return string The result of the API call.
-     */
-    public function tenantapicall($httpmethod, $apimethod, $params = '', $options = array()) {
-        $config = get_config('local_o365');
-        if (empty($config->aadtenant)) {
-            throw new \moodle_exception('erroracplocalo365notconfig', 'local_o365');
-        }
-        if (empty($options['apiarea'])) {
-            $options['apiarea'] = $this->generate_apiarea($apimethod);
-        }
-        $apimethod = '/v1.0/'.$config->aadtenant.$apimethod;
         return parent::apicall($httpmethod, $apimethod, $params, $options);
     }
 
@@ -183,13 +144,62 @@ class unified extends \local_o365\rest\o365api {
             throw new \coding_exception('tenant value must be a string');
         }
         $oidcconfig = get_config('auth_oidc');
-        $this->tenantoverride = $tenant;
         $appinfo = $this->get_application_info();
-        $this->tenantoverride = null;
-        if (isset($appinfo['value']) && isset($appinfo['value'][0]['appId'])) {
-            return ($appinfo['value'][0]['appId'] === $oidcconfig->clientid) ? true : false;
+        if (isset($appinfo['value']) && isset($appinfo['value'][0]['id'])) {
+            return ($appinfo['value'][0]['id'] === $oidcconfig->clientid) ? true : false;
         }
         return false;
+    }
+
+    /**
+     * Get the tenant associated with the current account.
+     *
+     * @return string The tenant string.
+     */
+    public function get_tenant() {
+        $response = $this->apicall('get', '/domains');
+        $response = $this->process_apicall_response($response, ['value' => null]);
+        foreach ($response['value'] as $domain) {
+            if (!empty($domain['isInitial']) && isset($domain['id'])) {
+                return $domain['id'];
+            }
+        }
+        throw new \moodle_exception('erroracpcantgettenant', 'local_o365');
+    }
+
+    /**
+     * Get the OneDrive URL associated with the current account.
+     *
+     * @return string The OneDrive URL string.
+     */
+    public function get_odburl() {
+        $tenant = $this->get_tenant();
+        $suffix = '.onmicrosoft.com';
+        $sufflen = strlen($suffix);
+        if (substr($tenant, -$sufflen) === $suffix) {
+            $prefix = substr($tenant, 0, -$sufflen);
+            $service = $prefix.'-my.sharepoint.com';
+            return $service;
+        }
+        throw new \moodle_exception('erroracpcantgettenant', 'local_o365');
+    }
+
+    /**
+     * Validate that a given url is a valid OneDrive for Business SharePoint URL.
+     *
+     * @param string $resource Uncleaned, unvalidated URL to check.
+     * @param \local_o365\oauth2\clientdata $clientdata oAuth2 Credentials
+     * @param \local_o365\httpclientinterface $httpclient An HttpClient to use for transport.
+     * @return bool Whether the received resource is valid or not.
+     */
+    public function validate_resource($resource, $clientdata) {
+        $cleanresource = clean_param($resource, PARAM_URL);
+        if ($cleanresource !== $resource) {
+            return false;
+        }
+        $fullcleanresource = 'https://'.$cleanresource;
+        $token = \local_o365\utils::get_app_or_system_token($fullcleanresource, $clientdata, $this->httpclient);
+        return (!empty($token)) ? true : false;
     }
 
     /**
@@ -410,6 +420,21 @@ class unified extends \local_o365\rest\o365api {
         $response = $this->betaapicall('post', '/directory/deleteditems/'.$objectid.'/restore');
         $response = $this->process_apicall_response($response);
         return $response;
+    }
+
+    /**
+     * Get a list of all groups a user is member of.
+     *
+     * @param string $groupobjectid The object ID of the group.
+     * @param string $userobjecttid The user ID.
+     * @return array Array of groups user is member of.
+     */
+    public function get_users_groups($groupobjectid, $userobjectid) {
+        $endpoint = 'users/'.$userobjectid.'/getMemberGroups';
+        $postdata = '{ "securityEnabledOnly": false }';
+        $response = $this->apicall('post', $endpoint, $postdata);
+        $expectedparams = ['value' => null];
+        return $this->process_apicall_response($response, $expectedparams);
     }
 
     /**
@@ -839,19 +864,19 @@ class unified extends \local_o365\rest\o365api {
         }
         $updateddata = [];
         if (!empty($updated['subject'])) {
-            $updateddata['Subject'] = $updated['subject'];
+            $updateddata['subject'] = $updated['subject'];
         }
         if (!empty($updated['body'])) {
-            $updateddata['Body'] = ['ContentType' => 'HTML', 'Content' => $updated['body']];
+            $updateddata['body'] = ['contentType' => 'HTML', 'content' => $updated['body']];
         }
         if (!empty($updated['starttime'])) {
-            $updateddata['Start'] = [
+            $updateddata['start'] = [
                 'dateTime' => date('c', $updated['starttime']),
                 'timeZone' => date('T', $updated['starttime']),
             ];
         }
         if (!empty($updated['endtime'])) {
-            $updateddata['End'] = [
+            $updateddata['end'] = [
                 'dateTime' => date('c', $updated['endtime']),
                 'timeZone' => date('T', $updated['endtime']),
             ];
@@ -860,19 +885,19 @@ class unified extends \local_o365\rest\o365api {
             $updateddata['responseRequested'] = $updated['responseRequested'];
         }
         if (isset($updated['attendees'])) {
-            $updateddata['Attendees'] = [];
+            $updateddata['attendees'] = [];
             foreach ($updated['attendees'] as $attendee) {
-                $updateddata['Attendees'][] = [
-                    'EmailAddress' => [
-                        'Address' => $attendee->email,
-                        'Name' => $attendee->firstname.' '.$attendee->lastname,
+                $updateddata['attendees'][] = [
+                    'emailAddress' => [
+                        'address' => $attendee->email,
+                        'name' => $attendee->firstname.' '.$attendee->lastname,
                     ],
-                    'Type' => 'Resource'
+                    'type' => 'resource'
                 ];
             }
         }
         $updateddata = json_encode($updateddata);
-        $response = $this->betaapicall('patch', '/me/events/'.$outlookeventid, $updateddata);
+        $response = $this->apicall('patch', '/me/events/'.$outlookeventid, $updateddata);
         $expectedparams = ['id' => null];
         return $this->process_apicall_response($response, $expectedparams);
     }
@@ -885,7 +910,7 @@ class unified extends \local_o365\rest\o365api {
      */
     public function delete_event($outlookeventid) {
         if (!empty($outlookeventid)) {
-            $this->betaapicall('delete', '/me/events/'.$outlookeventid);
+            $this->apicall('delete', '/me/events/'.$outlookeventid);
         }
         return true;
     }
@@ -989,8 +1014,8 @@ class unified extends \local_o365\rest\o365api {
      */
     public function get_application_info() {
         $oidcconfig = get_config('auth_oidc');
-        $endpoint = '/applications/?$filter=appId%20eq%20\''.$oidcconfig->clientid.'\'';
-        $response = $this->betatenantapicall('get', $endpoint);
+        $endpoint = '/applications/?$filter=id%20eq%20\''.$oidcconfig->clientid.'\'';
+        $response = $this->betaapicall('get', $endpoint);
         $expectedparams = ['value' => null];
         return $this->process_apicall_response($response, $expectedparams);
     }
@@ -1003,7 +1028,7 @@ class unified extends \local_o365\rest\o365api {
     public function get_application_serviceprincipal_info() {
         $oidcconfig = get_config('auth_oidc');
         $endpoint = '/servicePrincipals/?$filter=appId%20eq%20\''.$oidcconfig->clientid.'\'';
-        $response = $this->betatenantapicall('get', $endpoint);
+        $response = $this->betaapicall('get', $endpoint);
         $expectedparams = ['value' => null];
         return $this->process_apicall_response($response, $expectedparams);
     }
@@ -1018,7 +1043,7 @@ class unified extends \local_o365\rest\o365api {
         if (empty($response)) {
             $graphperms = $this->get_required_permissions('graph');
             $endpoint = '/servicePrincipals?$filter=appId%20eq%20\''.$graphperms['appId'].'\'';
-            $response = $this->betatenantapicall('get', $endpoint);
+            $response = $this->betaapicall('get', $endpoint);
             $expectedparams = ['value' => null];
             $response = $this->process_apicall_response($response, $expectedparams);
         }
@@ -1035,10 +1060,16 @@ class unified extends \local_o365\rest\o365api {
         if (empty($svc) || !is_array($svc)) {
             return null;
         }
-        if (!isset($svc['value']) || !isset($svc['value'][0]) || !isset($svc['value'][0]['oauth2Permissions'])) {
+        if (!isset($svc['value']) || !isset($svc['value'][0])) {
             return null;
         }
-        return $svc['value'][0]['oauth2Permissions'];
+        if (isset($svc['value'][0]['oauth2Permissions'])) {
+            return $svc['value'][0]['oauth2Permissions'];
+        } else if (isset($svc['value'][0]['publishedPermissionScopes'])) {
+            return $svc['value'][0]['publishedPermissionScopes'];
+        } else {
+            return null;
+        }
     }
 
     /**
@@ -1118,7 +1149,7 @@ class unified extends \local_o365\rest\o365api {
         if (!empty($resourceid)) {
             $endpoint .= '%20and%20resourceId%20eq%20\''.$resourceid.'\'';
         }
-        $response = $this->betatenantapicall('get', $endpoint);
+        $response = $this->betaapicall('get', $endpoint);
         $response = $this->process_apicall_response($response);
         return $response;
     }
@@ -1375,7 +1406,13 @@ class unified extends \local_o365\rest\o365api {
                             'appDisplayName' => $appdata['appDisplayName'],
                             'perms' => []
                         ];
-                        foreach ($appdata['oauth2Permissions'] as $i => $permdata) {
+                        $permissionslist = [];
+                        if (isset($appdata['oauth2Permissions'])) {
+                            $permissionslist = $appdata['oauth2Permissions'];
+                        } else if (isset($appdata['publishedPermissionScopes'])) {
+                            $permissionslist = $appdata['publishedPermissionScopes'];
+                        }
+                        foreach ($permissionslist as $i => $permdata) {
                             $transformed[$appdata['appId']]['perms'][$permdata['value']] = $permdata;
                         }
                     }
@@ -1525,6 +1562,87 @@ class unified extends \local_o365\rest\o365api {
             $result['objectId'] = $result['id'];
         }
         return $result;
+    }
+
+    /**
+     * Validate that a given SharePoint url is accessible with the given client data.
+     *
+     * @param string $uncleanurl Uncleaned, unvalidated URL to check.
+     * @return string One of:
+     *                    "invalid" : The URL is not a usable SharePoint url.
+     *                    "notempty" : The URL is a usable SharePoint url, and the SharePoint site exists.
+     *                    "valid" : The URL is a usable SharePoint url, and the SharePoint site doesn't exist.
+     */
+    public function sharepoint_validate_site($uncleanurl) {
+        if (!filter_var($uncleanurl, FILTER_VALIDATE_URL)) {
+            return 'invalid';
+        }
+        $parsedurl = parse_url($uncleanurl);
+
+        try {
+            $site = $this->sharepoint_get_site($parsedurl['host']);
+        } catch (\Exception $e) {
+            return 'invalid';
+        }
+
+        if (empty($parsedurl['path']) || $parsedurl['path'] == '/') {
+            return 'notempty';
+        } else {
+            try {
+                $site = $this->sharepoint_get_site($parsedurl['host'], $parsedurl['path']);
+                return 'notempty';
+            } catch (\Exception $e) {
+                return 'valid';
+            }
+        }
+    }
+
+    /**
+     * Get a sharepoint site.
+     *
+     * @param string $hostname The hostname of the top-level sharepoint site.
+     * @param string $subsitepath A path to a subsite if you want to get a subsite.
+     * @return array Site information.
+     */
+    public function sharepoint_get_site($hostname, $subsitepath = null) {
+        $endpoint = '/sites/'.$hostname;
+        if (!empty($subsitepath)) {
+            $endpoint .= ':'.$subsitepath;
+        }
+        $response = $this->apicall('get', $endpoint);
+        $expectedparams = ['id' => null];
+        $result = $this->process_apicall_response($response, $expectedparams);
+        return $result;
+    }
+
+    /**
+     * Determine if a sharepoint site exists.
+     *
+     * @param string $hostname The hostname of the top-level sharepoint site.
+     * @param string $subsitepath A path to a subsite if you want to get a subsite.
+     * @return bool Whether a sharepoint site exists.
+     */
+    public function sharepoint_site_exists($hostname, $subsitepath = null) {
+        try {
+            $site = $this->sharepoint_get_site($hostname, $subsitepath);
+            return (!empty($site) && !empty($site['id'])) ? true : false;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Create a sharepoint site.
+     *
+     * NOTE: Not yet supported in graph API.
+     *
+     * @param string $hostname The hostname of the top-level sharepoint site.
+     * @param string $subsitepath A path to a subsite if you want to get a subsite.
+     * @param string $name The name of the site.
+     * @param string $description The description of the site.
+     */
+    public function sharepoint_create_site($hostname, $subsitepath, $name, $description) {
+        throw new \Exception('Not yet supported with the Graph API');
     }
 
     /**

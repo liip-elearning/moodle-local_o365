@@ -43,6 +43,10 @@ if (!defined('LOCAL_O365_TAB_SETUP')) {
      */
     define('LOCAL_O365_TAB_TOOLS', 2);
     /**
+     * LOCAL_O365_TAB_CONNECTIONS - User connections table.
+     */
+    define('LOCAL_O365_TAB_CONNECTIONS', 4);
+    /**
      * LOCAL_O365_TAB_SDS - School data sync
      */
     define('LOCAL_O365_TAB_SDS', 3);
@@ -74,6 +78,12 @@ if ($hassiteconfig) {
         $linkurl = new \moodle_url('/local/o365/acp.php', ['mode' => 'healthcheck']);
         $desc = new lang_string('settings_healthcheck_details', 'local_o365');
         $settings->add(new \local_o365\adminsetting\toollink('local_o365/healthcheck', $label, $linktext, $linkurl, $desc));
+
+        $label = new lang_string('settings_userconnections', 'local_o365');
+        $linktext = new lang_string('settings_userconnections_linktext', 'local_o365');
+        $linkurl = new \moodle_url('/local/o365/acp.php', ['mode' => 'userconnections']);
+        $desc = new lang_string('settings_userconnections_details', 'local_o365');
+        $settings->add(new \local_o365\adminsetting\toollink('local_o365/userconnections', $label, $linktext, $linkurl, $desc));
 
         $label = new lang_string('settings_usermatch', 'local_o365');
         $linktext = new lang_string('settings_usermatch', 'local_o365');
@@ -149,13 +159,9 @@ if ($hassiteconfig) {
         $desc = new lang_string('settings_onenote_details', 'local_o365');
         $settings->add(new \admin_setting_configcheckbox('local_o365/onenote', $label, $desc, '0'));
 
-        $label = new lang_string('settings_disablegraphapi', 'local_o365');
-        $desc = new lang_string('settings_disablegraphapi_details', 'local_o365');
-        $settings->add(new \admin_setting_configcheckbox('local_o365/disablegraphapi', $label, $desc, '0'));
-
-        $label = new lang_string('settings_enableapponlyaccess', 'local_o365');
-        $desc = new lang_string('settings_enableapponlyaccess_details', 'local_o365');
-        $settings->add(new \admin_setting_configcheckbox('local_o365/enableapponlyaccess', $label, $desc, '1'));
+        $label = new lang_string('settings_previewfeatures', 'local_o365');
+        $desc = new lang_string('settings_previewfeatures_details', 'local_o365');
+        $settings->add(new \admin_setting_configcheckbox('local_o365/enablepreview', $label, $desc, '0'));
 
         $label = new lang_string('settings_debugmode', 'local_o365');
         $logurl = new \moodle_url('/report/log/index.php', ['chooselog' => '1', 'modid' => 'site_errors']);
@@ -171,8 +177,17 @@ if ($hassiteconfig) {
         $settings->add(new \admin_setting_configtext('local_o365/photoexpire', $label, $desc, '24'));
 
     }
+    if ($tab == LOCAL_O365_TAB_CONNECTIONS || !empty($install)) {
+
+    }
     if ($tab == LOCAL_O365_TAB_SETUP || !empty($install)) {
 
+        $stepsenabled = 1;
+
+        $configdesc = new \lang_string('settings_migration', 'local_o365');
+        $settings->add(new admin_setting_heading('local_o365_setup_migration', '', $configdesc));
+
+        // STEP 1: Registration.
         $oidcsettings = new \moodle_url('/admin/settings.php?section=authsettingoidc');
         $label = new lang_string('settings_setup_step1', 'local_o365');
         $desc = new lang_string('settings_setup_step1_desc', 'local_o365');
@@ -201,36 +216,84 @@ if ($hassiteconfig) {
         $configdesc = new lang_string('settings_clientsecret_desc', 'local_o365');
         $settings->add(new admin_setting_configtext('auth_oidc/clientsecret', $configkey, $configdesc, '', PARAM_TEXT));
 
-        $configdesc = new \lang_string('settings_setup_step1_end', 'local_o365', (object)['oidcsettings' => $oidcsettings->out()]);
-        $settings->add(new admin_setting_heading('local_o365_setup_step1end', '', $configdesc));
+        $configdesc = new \lang_string('settings_setup_step1_credentials_end', 'local_o365', (object)['oidcsettings' => $oidcsettings->out()]);
+        $settings->add(new admin_setting_heading('local_o365_setup_step1_credentialsend', '', $configdesc));
 
-        $label = new lang_string('settings_setup_step2', 'local_o365');
-        $desc = new lang_string('settings_setup_step2_desc', 'local_o365');
-        $settings->add(new admin_setting_heading('local_o365_setup_step2', $label, $desc));
+        $configdesc = new \lang_string('settings_setup_step1_perms', 'local_o365', (object)['oidcsettings' => $oidcsettings->out()]);
+        $settings->add(new admin_setting_heading('local_o365_setup_step1_perms', '', $configdesc));
 
-        $label = new lang_string('settings_systemapiuser', 'local_o365');
-        $desc = new lang_string('settings_systemapiuser_details', 'local_o365');
-        $settings->add(new \local_o365\adminsetting\systemapiuser('local_o365/systemapiuser', $label, $desc, '', PARAM_RAW));
+        // STEP 2: Connection Method.
+        $clientid = get_config('auth_oidc', 'clientid');
+        $clientsecret = get_config('auth_oidc', 'clientsecret');
+        if (!empty($clientid) && !empty($clientsecret)) {
+            $stepsenabled = 2;
+        } else {
+            $configdesc = new \lang_string('settings_setup_step1_continue', 'local_o365');
+            $settings->add(new admin_setting_heading('local_o365_setup_step1continue', '', $configdesc));
+        }
 
-        $label = new lang_string('settings_setup_step3', 'local_o365');
-        $desc = new lang_string('settings_setup_step3_desc', 'local_o365');
-        $settings->add(new admin_setting_heading('local_o365_setup_step3', $label, $desc));
+        if ($stepsenabled === 2) {
+            $label = new lang_string('settings_setup_step2', 'local_o365');
+            $desc = new lang_string('settings_setup_step2_desc', 'local_o365');
+            $settings->add(new admin_setting_heading('local_o365_setup_step2', $label, $desc));
 
-        $label = new lang_string('settings_aadtenant', 'local_o365');
-        $desc = new lang_string('settings_aadtenant_details', 'local_o365');
-        $default = '';
-        $paramtype = PARAM_URL;
-        $settings->add(new \local_o365\adminsetting\serviceresource('local_o365/aadtenant', $label, $desc, $default, $paramtype));
+            $label = new lang_string('settings_enableapponlyaccess', 'local_o365');
+            $desc = new lang_string('settings_enableapponlyaccess_details', 'local_o365');
+            $settings->add(new \admin_setting_configcheckbox('local_o365/enableapponlyaccess', $label, $desc, '1'));
 
-        $label = new lang_string('settings_odburl', 'local_o365');
-        $desc = new lang_string('settings_odburl_details', 'local_o365');
-        $default = '';
-        $paramtype = PARAM_URL;
-        $settings->add(new \local_o365\adminsetting\serviceresource('local_o365/odburl', $label, $desc, $default, $paramtype));
+            $label = new lang_string('settings_systemapiuser', 'local_o365');
+            $desc = new lang_string('settings_systemapiuser_details', 'local_o365');
+            $settings->add(new \local_o365\adminsetting\systemapiuser('local_o365/systemapiuser', $label, $desc, '', PARAM_RAW));
 
-        $label = new lang_string('settings_azuresetup', 'local_o365');
-        $desc = new lang_string('settings_azuresetup_details', 'local_o365');
-        $settings->add(new \local_o365\adminsetting\azuresetup('local_o365/azuresetup', $label, $desc));
+            $enableapponlyaccess = get_config('local_o365', 'enableapponlyaccess');
+            $systemapiuser = get_config('local_o365', 'systemtokens');
+            if (!empty($enableapponlyaccess) || !empty($systemapiuser)) {
+                $stepsenabled = 3;
+            } else {
+                $configdesc = new \lang_string('settings_setup_step2_continue', 'local_o365');
+                $settings->add(new admin_setting_heading('local_o365_setup_step2continue', '', $configdesc));
+            }
+        }
+
+        // STEP 3: Consent and additional information.
+        if ($stepsenabled === 3) {
+            $label = new lang_string('settings_setup_step3', 'local_o365');
+            $desc = new lang_string('settings_setup_step3_desc', 'local_o365');
+            $settings->add(new admin_setting_heading('local_o365_setup_step3', $label, $desc));
+
+            $label = new lang_string('settings_adminconsent', 'local_o365');
+            $desc = new lang_string('settings_adminconsent_details', 'local_o365');
+            $settings->add(new \local_o365\adminsetting\adminconsent('local_o365/adminconsent', $label, $desc, '', PARAM_RAW));
+
+            $label = new lang_string('settings_aadtenant', 'local_o365');
+            $desc = new lang_string('settings_aadtenant_details', 'local_o365');
+            $default = '';
+            $paramtype = PARAM_URL;
+            $settings->add(new \local_o365\adminsetting\serviceresource('local_o365/aadtenant', $label, $desc, $default, $paramtype));
+
+            $label = new lang_string('settings_odburl', 'local_o365');
+            $desc = new lang_string('settings_odburl_details', 'local_o365');
+            $default = '';
+            $paramtype = PARAM_URL;
+            $settings->add(new \local_o365\adminsetting\serviceresource('local_o365/odburl', $label, $desc, $default, $paramtype));
+
+            $aadtenant = get_config('local_o365', 'aadtenant');
+            $odburl = get_config('local_o365', 'odburl');
+            if (!empty($aadtenant) && !empty($odburl)) {
+                $stepsenabled = 4;
+            }
+        }
+
+        // Step 4: Verify.
+        if ($stepsenabled === 4) {
+            $label = new lang_string('settings_setup_step4', 'local_o365');
+            $desc = new lang_string('settings_setup_step4_desc', 'local_o365');
+            $settings->add(new admin_setting_heading('local_o365_setup_step4', $label, $desc));
+
+            $label = new lang_string('settings_azuresetup', 'local_o365');
+            $desc = new lang_string('settings_azuresetup_details', 'local_o365');
+            $settings->add(new \local_o365\adminsetting\azuresetup('local_o365/azuresetup', $label, $desc));
+        }
     }
     if ($tab == LOCAL_O365_TAB_SDS || !empty($install)) {
         $scheduledtasks = new \moodle_url('/admin/tool/task/scheduledtasks.php');
@@ -242,10 +305,13 @@ if ($hassiteconfig) {
             $httpclient = new \local_o365\httpclient();
             $clientdata = \local_o365\oauth2\clientdata::instance_from_oidc();
             $resource = \local_o365\rest\sds::get_resource();
-            $token = \local_o365\oauth2\systemtoken::instance(null, $resource, $clientdata, $httpclient);
-            $apiclient = new \local_o365\rest\sds($token, $httpclient);
-            $schools = $apiclient->get_schools();
-            $schools = $schools['value'];
+            $token = \local_o365\oauth2\systemapiusertoken::instance(null, $resource, $clientdata, $httpclient);
+            $schools = null;
+            if (!empty($token)) {
+                $apiclient = new \local_o365\rest\sds($token, $httpclient);
+                $schools = $apiclient->get_schools();
+                $schools = $schools['value'];
+            }
         } catch (\Exception $e) {
             \local_o365\utils::debug($e->getMessage(), 'settings.php', $e);
             $schools = [];

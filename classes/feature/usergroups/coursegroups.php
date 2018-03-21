@@ -219,13 +219,15 @@ class coursegroups {
     }
 
     /**
-     * Check to see if the group still exists.
+     * Get the IDs of all present groups.
+     *
+     * @return array An array of group IDs.
      */
     public function get_all_group_ids() {
         $groupids = [];
         $groups = $this->graphclient->get_groups();
         foreach ($groups['value'] as $group) {
-            $this->groups[] = $group['id'];
+            $groupids[] = $group['id'];
         }
         while (!empty($groups['@odata.nextLink'])) {
             // Extract skiptoken.
@@ -236,7 +238,7 @@ class coursegroups {
                 if (isset($query['$skiptoken'])) {
                     $groups = $this->graphclient->get_groups($query['$skiptoken']);
                     foreach ($groups['value'] as $group) {
-                        if (!in_array($group['id'], $this->groups)) {
+                        if (!in_array($group['id'], $groupids)) {
                             $groupids[] = $group['id'];
                         }
                     }
@@ -289,12 +291,13 @@ class coursegroups {
         $coursecontext = \context_course::instance($courseid);
         list($esql, $params) = get_enrolled_sql($coursecontext);
         $sql = "SELECT u.id,
-                       tok.oidcuniqid as userobjectid
+                       objs.objectid as userobjectid
                   FROM {user} u
                   JOIN ($esql) je ON je.id = u.id
-                  JOIN {auth_oidc_token} tok ON tok.username = u.username AND tok.resource = :tokresource
-                 WHERE u.deleted = 0";
+                  JOIN {local_o365_objects} objs ON objs.moodleid = u.id
+                 WHERE u.deleted = 0 AND objs.type = :user";
         $params['tokresource'] = 'https://graph.windows.net';
+        $params['user'] = 'user';
         $enrolled = $this->DB->get_recordset_sql($sql, $params);
         foreach ($enrolled as $user) {
             $intendedmembers[$user->userobjectid] = $user->id;
@@ -388,7 +391,7 @@ class coursegroups {
         $httpclient = new \local_o365\httpclient();
         $clientdata = \local_o365\oauth2\clientdata::instance_from_oidc();
         $notebookresource = \local_o365\rest\notebook::get_resource();
-        $notebooktoken = \local_o365\oauth2\systemtoken::instance(null, $notebookresource, $clientdata, $httpclient);
+        $notebooktoken = \local_o365\utils::get_app_or_system_token($notebookresource, $clientdata, $httpclient);
         $notebookclient = new \local_o365\rest\notebook($notebooktoken, $httpclient);
         $groups = $this->get_all_officegroupids_classnotebook_notpresent();
 
