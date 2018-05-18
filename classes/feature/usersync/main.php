@@ -382,7 +382,9 @@ class main {
         $newuser = static::apply_configured_fieldmap($aaddata, $newuser, 'create');
 
         $password = null;
-        $newuser->idnumber = $newuser->username;
+        if (!isset($newuser->idnumber)) {
+            $newuser->idnumber = $newuser->username;
+        }
 
         if (!empty($newuser->email)) {
             if (email_is_not_allowed($newuser->email)) {
@@ -662,10 +664,10 @@ class main {
                         // Do not switch Moodle user to OpenID if another Moodle user is already using same Office 365 account for logging in.
                         $sql = 'SELECT u.username
                                   FROM {user} u
-                             LEFT JOIN {local_o365_objects} obj ON obj.type="user" AND obj.moodleid = u.id
+                             LEFT JOIN {local_o365_objects} obj ON obj.type = ? AND obj.moodleid = u.id
                              WHERE obj.o365name = ?
                                AND u.username != ?';
-                        $params = [$user['upnlower'], $existinguser->username];
+                        $params = ['user', $user['upnlower'], $existinguser->username];
                         $alreadylinkedusername = $DB->get_field_sql($sql, $params);
 
                         if ($alreadylinkedusername !== false) {

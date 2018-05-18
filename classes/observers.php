@@ -68,6 +68,19 @@ class observers {
                 break;
 
             case 'adminconsent':
+                // Get tenant if using app-only access.
+                if (\local_o365\utils::is_enabled_apponlyaccess() === true) {
+                    if (isset($eventdata['other']['tokenparams']['id_token'])) {
+                        $idtoken = $eventdata['other']['tokenparams']['id_token'];
+                        $idtoken = \auth_oidc\jwt::instance_from_encoded($idtoken);
+                        if (!empty($idtoken)) {
+                            $tenant = \local_o365\utils::get_tenant_from_idtoken($idtoken);
+                            if (!empty($tenant)) {
+                                set_config('aadtenantid', $tenant, 'local_o365');
+                            }
+                        }
+                    }
+                }
                 redirect(new \moodle_url('/admin/settings.php?section=local_o365'));
                 break;
 
@@ -276,12 +289,6 @@ class observers {
 
             // Extract basic information from the IDToken.
             $updateduser = new \stdClass;
-            
-	    // SUP-7701 
-	    // Applied patch https://github.com/Microsoft/o365-moodle/issues/221
-	    // $updateduser->lang = 'en';
-            
-	    $updateduser->idnumber = '';
             $firstname = $idtoken->claim('given_name');
             if (!empty($firstname)) {
                 $updateduser->firstname = $firstname;
